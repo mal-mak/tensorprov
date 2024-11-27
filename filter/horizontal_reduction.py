@@ -10,7 +10,6 @@ def transform(input_df: pd.DataFrame, filter: str):
 
     Parameters:
     - input_df (pd.DataFrame): The original DataFrame to be filtered.
-        Must be a Pandas DataFrame containing the input data.
     - filter (str): The filter condition as a string. This should be a valid query
         condition string, formatted in the style supported by `DataFrame.query()`.
         For example, "col1 > 2 & col2 < 10".
@@ -28,16 +27,21 @@ def transform(input_df: pd.DataFrame, filter: str):
     2     3     9
     4     5    10
     """
-    output_df = input_df.query(filter)
-    return output_df
+    try:
+        output_df = input_df.query(filter)
+        return output_df
+    except Exception as e:
+        print(
+            f'Invalid filter. It should be a valid query condition string. Example: "(col1 > 2) & (col2 < 7)"\nError: {e}'
+        )
 
 
 def provenance(input_df: pd.DataFrame, output_df: pd.DataFrame, sparse: bool = True):
     """
-    Constructs a sparse tensor in COO (Coordinate) format that records the provenance
-    of each row in the `output_df` with respect to `input_df`. The provenance tensor
-    indicates which rows in the original DataFrame (`input_df`) are retained in the
-    transformed DataFrame (`output_df`), based on the applied filter.
+    Constructs a tensor that records the provenance of each row in the `output_df` with 
+    respect to `input_df`. The provenance tensor indicates which rows in the original 
+    DataFrame (`input_df`) are retained in the ransformed DataFrame (`output_df`), 
+    based on the applied filter.
 
     Parameters:
     - input_df (pd.DataFrame): The original input DataFrame containing the unfiltered data.
@@ -73,19 +77,40 @@ def provenance(input_df: pd.DataFrame, output_df: pd.DataFrame, sparse: bool = T
             [0, 0],
             [1, 1]], dtype=torch.int8)
     """
-    # Identify retained rows
-    indices = output_df.index
-    values = torch.ones(len(indices), dtype=torch.int8)
 
-    # Create a COO tensor for provenance
-    provenance_tensor = torch.sparse_coo_tensor(
-        indices=[indices], values=values, size=(input_df.shape[0],)
-    )
+    # Check if the output_df contains columns that exist in input_df
+    if not set(output_df.columns).issubset(input_df.columns):
+        raise ValueError(
+            "Error: One or more columns in the output_df are not found in input_df."
+        )
+
+    # Identify retained rows
+    retained_rows = output_df.index
+    try:
+        retained_rows = [input_df.index.get_loc(row) for row in output_df.index]
+    except KeyError as e:
+        raise KeyError(
+            f"Error: One or more rows in output_df are not found in input_df. {e}"
+        )
 
     if sparse:
-        return provenance_tensor
+        try:
+            values = torch.ones(len(retained_rows), dtype=torch.int8)
+            # Create a COO tensor for provenance
+            provenance_tensor = torch.sparse_coo_tensor(
+                indices=[retained_rows], values=values, size=(input_df.shape[0],)
+            )
+        except Exception as e:
+            raise RuntimeError(f"Error: Failed to create sparse tensor. {e}")
     else:
-        provenance_tensor_dense = (
-            provenance_tensor.to_dense().unsqueeze(1).repeat(1, input_df.shape[1])
-        )  # Duplicate the vector across columns to get the right shape
-        return provenance_tensor_dense
+        try:
+            # Initialize a zero tensor of shape (input_df.shape[0], input_df.shape[1])
+            provenance_tensor = torch.zeros(
+                input_df.shape[0], input_df.shape[1], dtype=torch.int8
+            )
+            for row_idx in retained_rows:
+                provenance_tensor[row_idx, :] = 1
+        except Exception as e:
+            raise RuntimeError(f"Error: Failed to create dense tensor. {e}")
+
+    return provenance_tensor
