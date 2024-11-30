@@ -1,5 +1,6 @@
 import pandas as pd
 import torch
+import time
 
 
 def transform(input_df: pd.DataFrame, filter: str):
@@ -27,6 +28,12 @@ def transform(input_df: pd.DataFrame, filter: str):
     2     3     9
     4     5    10
     """
+    if isinstance(input_df, torch.Tensor):
+        # Convert input to pandas DataFrame
+        input_df = pd.DataFrame(
+            input_df.numpy(), columns=[f"col{i}" for i in range(input_df.shape[1])]
+        )
+
     try:
         output_df = input_df.query(filter)
         return output_df
@@ -34,13 +41,14 @@ def transform(input_df: pd.DataFrame, filter: str):
         print(
             f'Invalid filter. It should be a valid query condition string. Example: "(col1 > 2) & (col2 < 7)"\nError: {e}'
         )
+        return pd.DataFrame()
 
 
 def provenance(input_df: pd.DataFrame, output_df: pd.DataFrame, sparse: bool = True):
     """
-    Constructs a tensor that records the provenance of each row in the `output_df` with 
-    respect to `input_df`. The provenance tensor indicates which rows in the original 
-    DataFrame (`input_df`) are retained in the ransformed DataFrame (`output_df`), 
+    Constructs a tensor that records the provenance of each row in the `output_df` with
+    respect to `input_df`. The provenance tensor indicates which rows in the original
+    DataFrame (`input_df`) are retained in the ransformed DataFrame (`output_df`),
     based on the applied filter.
 
     Parameters:
@@ -77,6 +85,11 @@ def provenance(input_df: pd.DataFrame, output_df: pd.DataFrame, sparse: bool = T
             [0, 0],
             [1, 1]], dtype=torch.int8)
     """
+    if isinstance(input_df, torch.Tensor):
+        # Convert input to pandas DataFrame
+        input_df = pd.DataFrame(
+            input_df.numpy(), columns=[f"col{i}" for i in range(input_df.shape[1])]
+        )
 
     # Check if the output_df contains columns that exist in input_df
     if not set(output_df.columns).issubset(input_df.columns):
@@ -114,3 +127,49 @@ def provenance(input_df: pd.DataFrame, output_df: pd.DataFrame, sparse: bool = T
             raise RuntimeError(f"Error: Failed to create dense tensor. {e}")
 
     return provenance_tensor
+
+
+# Performance comparison
+def compare(input_df, filter):
+    """
+    Compare performance and results of sparse and dense provenance methods.
+
+    Parameters:
+        data (torch.Tensor): Original dataset (2D tensor).
+        method (str): Oversampling method ('horizontal' or 'vertical').
+        factor (int): Multiplication factor for oversampling.
+
+    Returns:
+        None
+    """
+    if isinstance(input_df, torch.Tensor):
+        # Convert input to pandas DataFrame
+        input_df = pd.DataFrame(
+            input_df.numpy(), columns=[f"col{i}" for i in range(input_df.shape[1])]
+        )
+    output_df = transform(input_df, filter)
+
+    # Method 1: Sparse tensor
+    start = time.time()
+    sparse_provenance = provenance(input_df, output_df, sparse=True)
+    sparse_time = time.time() - start
+    print(f"Sparse Tensor Time: {sparse_time:.6f}s\n")
+    print(f"Provenance Sparse Tensor : {sparse_provenance}\n")
+
+    # Method 2: Dense tensor
+    start = time.time()
+    dense_provenance = provenance(input_df, output_df, sparse=False)
+    dense_time = time.time() - start
+    print(f"Provenance dense Tensor : {dense_provenance}\n")
+    print(f"Dense Tensor Time: {dense_time:.6f}s\n")
+
+    # Verify consistency
+    sparse_dense_diff = (
+        sparse_provenance.to_dense()
+        if sparse_provenance.is_sparse
+        else sparse_provenance
+    ) - dense_provenance[
+        :, 0
+    ]  # Because dense_provenance is of the same shape as input_df whereas sparse_provenance just represents the retained rows (input_df.shape[0])
+    consistent = torch.allclose(sparse_dense_diff, torch.zeros_like(sparse_dense_diff))
+    print(f"Results Consistent: {consistent}")

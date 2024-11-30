@@ -1,5 +1,6 @@
 import pandas as pd
 import torch
+import time
 
 
 def transform(input_df: pd.DataFrame, columns: list[str], retain: bool = True):
@@ -33,6 +34,12 @@ def transform(input_df: pd.DataFrame, columns: list[str], retain: bool = True):
     0  1  5
     1  2  6
     """
+    if isinstance(input_df, torch.Tensor):
+        # Convert input to pandas DataFrame
+        input_df = pd.DataFrame(
+            input_df.numpy(), columns=[f"col{i}" for i in range(input_df.shape[1])]
+        )
+
     try:
         if retain:
             output_df = input_df[columns]
@@ -84,6 +91,12 @@ def provenance(input_df: pd.DataFrame, output_df: pd.DataFrame, sparse: bool = T
     tensor([[1, 0, 1],
             [1, 0, 1]])
     """
+    if isinstance(input_df, torch.Tensor):
+        # Convert input to pandas DataFrame
+        input_df = pd.DataFrame(
+            input_df.numpy(), columns=[f"col{i}" for i in range(input_df.shape[1])]
+        )
+
     # Check if the output_df contains columns that exist in input_df
     if not set(output_df.columns).issubset(input_df.columns):
         raise ValueError(
@@ -119,3 +132,49 @@ def provenance(input_df: pd.DataFrame, output_df: pd.DataFrame, sparse: bool = T
             raise RuntimeError(f"Error: Failed to create dense tensor. {e}")
 
     return provenance_tensor
+
+
+# Performance comparison
+def compare(input_df, columns, retain):
+    """
+    Compare performance and results of sparse and dense provenance methods.
+
+    Parameters:
+        data (torch.Tensor): Original dataset (2D tensor).
+        method (str): Oversampling method ('horizontal' or 'vertical').
+        factor (int): Multiplication factor for oversampling.
+
+    Returns:
+        None
+    """
+    if isinstance(input_df, torch.Tensor):
+        # Convert input to pandas DataFrame
+        input_df = pd.DataFrame(
+            input_df.numpy(), columns=[f"col{i}" for i in range(input_df.shape[1])]
+        )
+    output_df = transform(input_df, columns, retain)
+
+    # Method 1: Sparse tensor
+    start = time.time()
+    sparse_provenance = provenance(input_df, output_df, sparse=True)
+    sparse_time = time.time() - start
+    print(f"Sparse Tensor Time: {sparse_time:.6f}s\n")
+    print(f"Provenance Sparse Tensor : {sparse_provenance}\n")
+
+    # Method 2: Dense tensor
+    start = time.time()
+    dense_provenance = provenance(input_df, output_df, sparse=False)
+    dense_time = time.time() - start
+    print(f"Provenance dense Tensor : {dense_provenance}\n")
+    print(f"Dense Tensor Time: {dense_time:.6f}s\n")
+
+    # Verify consistency
+    sparse_dense_diff = (
+        sparse_provenance.to_dense()
+        if sparse_provenance.is_sparse
+        else sparse_provenance
+    ) - dense_provenance[
+        0, :
+    ]  # Because dense_provenance is of the same shape as input_df whereas sparse_provenance just represents the retained columns (input_df.shape[1])
+    consistent = torch.allclose(sparse_dense_diff, torch.zeros_like(sparse_dense_diff))
+    print(f"Results Consistent: {consistent}")
