@@ -1,22 +1,23 @@
 import pandas as pd
 import torch
 import time
+import hashlib
 
 
-def transform(input_df: pd.DataFrame, filter: str):
+def transform(input_df: pd.DataFrame, filter: str) -> pd.DataFrame:
     """
     Applies a `filter` operation to `input_df`, returning a DataFrame with rows
     that meet the specified condition. This function serves as a horizontal reduction
     operation by filtering rows based on the provided condition.
 
     Parameters:
-    - input_df (pd.DataFrame): The original DataFrame to be filtered.
-    - filter (str): The filter condition as a string. This should be a valid query
-        condition string, formatted in the style supported by `DataFrame.query()`.
-        For example, "col1 > 2 & col2 < 10".
+        - input_df (pd.DataFrame): The original DataFrame to be filtered.
+        - filter (str): The filter condition as a string. This should be a valid query
+            condition string, formatted in the style supported by `DataFrame.query()`.
+            For example, "col1 > 2 & col2 < 10".
 
     Returns:
-    - pd.DataFrame: A DataFrame containing only rows that satisfy the specified filter condition.
+        - pd.DataFrame: A DataFrame containing only rows that satisfy the specified filter condition.
 
     Example:
     >>> data = {"col1": [1, 2, 3, 4, 5], "col2": [8, 6, 9, 7, 10]}
@@ -44,46 +45,20 @@ def transform(input_df: pd.DataFrame, filter: str):
         return pd.DataFrame()
 
 
-def provenance(input_df: pd.DataFrame, output_df: pd.DataFrame, sparse: bool = True):
+def provenance_index_matching(
+    input_df: pd.DataFrame, output_df: pd.DataFrame, sparse: bool = True
+) -> torch.Tensor:
     """
-    Constructs a tensor that records the provenance of each row in the `output_df` with
-    respect to `input_df`. The provenance tensor indicates which rows in the original
-    DataFrame (`input_df`) are retained in the ransformed DataFrame (`output_df`),
-    based on the applied filter.
+    Create a tensor where the (i, j) entry is 1 if the hash of the i-th row of
+    input_df matches the hash of the j-th row of output_df, otherwise 0.
 
     Parameters:
-    - input_df (pd.DataFrame): The original input DataFrame containing the unfiltered data.
-    - output_df (pd.DataFrame): The filtered output DataFrame containing only the rows
-        that match the filter condition.
-    - sparse (bool, optional): If True, returns a sparse COO tensor indicating provenance
-        information. If False, returns a dense tensor expanded across columns to match
-        the shape of `input_df`. Default is True.
+        - input_df (pd.DataFrame): The original DataFrame.
+        - output_df (pd.DataFrame): The filtered DataFrame.
+        - sparse (bool): If True, returns a sparse tensor. Defaults to True.
 
     Returns:
-    - torch.Tensor: A sparse or dense tensor, depending on the `sparse` flag.
-        - If `sparse=True`, a sparse COO tensor with shape `(input_df.shape[0],)`, where
-          each non-zero element corresponds to a retained row in `output_df`.
-        - If `sparse=False`, a dense tensor with shape `(input_df.shape[0], input_df.shape[1])`
-          that has the provenance information duplicated across columns.
-
-    Example:
-    >>> data = {"col1": [1, 2, 3, 4, 5], "col2": [8, 6, 9, 7, 10]}
-    >>> input_df = pd.DataFrame(data)
-    >>> filter_condition = "(col1 > 2) & (col2 > 7)"
-    >>> output_df = transform(input_df, filter_condition)
-    >>> sparse_tensor = provenance(input_df, output_df, sparse=True)
-    >>> sparse_tensor
-    tensor(indices=tensor([[2, 4]]),
-           values=tensor([1, 1], dtype=torch.int8),
-           size=(5,), nnz=2, dtype=torch.int8, layout=torch.sparse_coo)
-
-    >>> dense_tensor = provenance(input_df, output_df, sparse=False)
-    >>> dense_tensor
-    tensor([[0, 0],
-            [0, 0],
-            [1, 1],
-            [0, 0],
-            [1, 1]], dtype=torch.int8)
+        - torch.Tensor: A sparse or dense tensor representing the provenance.
     """
     if isinstance(input_df, torch.Tensor):
         # Convert input to pandas DataFrame
@@ -98,7 +73,6 @@ def provenance(input_df: pd.DataFrame, output_df: pd.DataFrame, sparse: bool = T
         )
 
     # Identify retained rows
-    retained_rows = output_df.index
     try:
         retained_rows = [input_df.index.get_loc(row) for row in output_df.index]
     except KeyError as e:
@@ -108,36 +82,112 @@ def provenance(input_df: pd.DataFrame, output_df: pd.DataFrame, sparse: bool = T
 
     if sparse:
         try:
+            # Create indices for a sparse COO tensor
+            indices = torch.tensor(
+                [retained_rows, list(range(len(retained_rows)))], dtype=torch.int64
+            )
             values = torch.ones(len(retained_rows), dtype=torch.int8)
-            # Create a COO tensor for provenance
+            # Create the sparse tensor
             provenance_tensor = torch.sparse_coo_tensor(
-                indices=[retained_rows], values=values, size=(input_df.shape[0],)
+                indices=indices,
+                values=values,
+                size=(input_df.shape[0], output_df.shape[0]),
             )
         except Exception as e:
             raise RuntimeError(f"Error: Failed to create sparse tensor. {e}")
     else:
         try:
-            # Initialize a zero tensor of shape (input_df.shape[0], input_df.shape[1])
+            # Create a dense tensor and mark retained row relationships
             provenance_tensor = torch.zeros(
-                input_df.shape[0], input_df.shape[1], dtype=torch.int8
+                (input_df.shape[0], output_df.shape[0]), dtype=torch.int8
             )
-            for row_idx in retained_rows:
-                provenance_tensor[row_idx, :] = 1
+            for output_idx, input_idx in enumerate(retained_rows):
+                provenance_tensor[input_idx, output_idx] = 1
         except Exception as e:
             raise RuntimeError(f"Error: Failed to create dense tensor. {e}")
 
     return provenance_tensor
 
 
+def hash_row(row) -> str:
+    """
+    Compute a unique hash for a given row using SHA256.
+    """
+    row_str = ",".join(map(str, row))
+    return hashlib.sha256(row_str.encode()).hexdigest()
+
+
+def provenance_by_hashing(
+    input_df: pd.DataFrame, output_df: pd.DataFrame, sparse: bool = True
+) -> torch.Tensor:
+    """
+    Create a tensor where the (i, j) entry is 1 if the hash of the i-th row of
+    input_df matches the hash of the j-th row of output_df, otherwise 0.
+
+    Parameters:
+        - input_df (pd.DataFrame): The original DataFrame.
+        - output_df (pd.DataFrame): The filtered DataFrame.
+        - sparse (bool): If True, returns a sparse tensor. Defaults to True.
+
+    Returns:
+        - torch.Tensor: A sparse or dense tensor representing the provenance.
+    """
+    if isinstance(input_df, torch.Tensor):
+        # Convert input to pandas DataFrame
+        input_df = pd.DataFrame(
+            input_df.numpy(), columns=[f"col{i}" for i in range(input_df.shape[1])]
+        )
+
+    # Check if the output_df contains columns that exist in input_df
+    if not set(output_df.columns).issubset(input_df.columns):
+        raise ValueError(
+            "Error: One or more columns in the output_df are not found in input_df."
+        )
+    # Compute hashes for rows in both DataFrames
+    input_hashes = input_df.apply(hash_row, axis=1).values
+    output_hashes = output_df.apply(hash_row, axis=1).values
+
+    # Collect matching indices
+    indices = []
+    for i, input_hash in enumerate(input_hashes):
+        for j, output_hash in enumerate(output_hashes):
+            if input_hash == output_hash:
+                indices.append((i, j))
+
+    if sparse:
+        # Create sparse tensor
+        if indices:
+            indices_tensor = torch.tensor(
+                indices, dtype=torch.long
+            ).T  # Transpose for sparse representation
+            values = torch.ones(len(indices), dtype=torch.int8)
+            sparse_shape = (len(input_hashes), len(output_hashes))
+            return torch.sparse_coo_tensor(
+                indices_tensor, values, sparse_shape, dtype=torch.int8
+            )
+        else:
+            # Return an empty sparse tensor if no matches are found
+            return torch.sparse_coo_tensor(
+                size=(len(input_hashes), len(output_hashes)), dtype=torch.int8
+            )
+    else:
+        # Create dense matrix
+        provenance_matrix = torch.zeros(
+            (len(input_hashes), len(output_hashes)), dtype=torch.int8
+        )
+        for i, j in indices:
+            provenance_matrix[i, j] = 1
+        return provenance_matrix
+
+
 # Performance comparison
-def compare(input_df, filter):
+def compare(input_df: pd.DataFrame, filter: str) -> None:
     """
     Compare performance and results of sparse and dense provenance methods.
 
     Parameters:
-        data (torch.Tensor): Original dataset (2D tensor).
-        method (str): Oversampling method ('horizontal' or 'vertical').
-        factor (int): Multiplication factor for oversampling.
+        input_df (pd.DataFrame or torch.Tensor): Original dataset (2D tensor or DataFrame).
+        filter (callable): Function to filter rows from the input DataFrame.
 
     Returns:
         None
@@ -149,27 +199,67 @@ def compare(input_df, filter):
         )
     output_df = transform(input_df, filter)
 
-    # Method 1: Sparse tensor
+    # Method 1: Index Matching
+    print("INDEX MATCHING\n")
     start = time.time()
-    sparse_provenance = provenance(input_df, output_df, sparse=True)
+    sparse_provenance = provenance_index_matching(input_df, output_df, sparse=True)
     sparse_time = time.time() - start
     print(f"Sparse Tensor Time: {sparse_time:.6f}s\n")
-    print(f"Provenance Sparse Tensor : {sparse_provenance}\n")
+    print(f"Provenance Sparse Tensor :\n{sparse_provenance}\n")
 
-    # Method 2: Dense tensor
     start = time.time()
-    dense_provenance = provenance(input_df, output_df, sparse=False)
+    dense_provenance = provenance_index_matching(input_df, output_df, sparse=False)
     dense_time = time.time() - start
-    print(f"Provenance dense Tensor : {dense_provenance}\n")
     print(f"Dense Tensor Time: {dense_time:.6f}s\n")
+    print(f"Provenance dense Tensor :\n{dense_provenance}\n")
 
     # Verify consistency
-    sparse_dense_diff = (
-        sparse_provenance.to_dense()
-        if sparse_provenance.is_sparse
-        else sparse_provenance
-    ) - dense_provenance[
-        :, 0
-    ]  # Because dense_provenance is of the same shape as input_df whereas sparse_provenance just represents the retained rows (input_df.shape[0])
-    consistent = torch.allclose(sparse_dense_diff, torch.zeros_like(sparse_dense_diff))
+    consistent = torch.equal(sparse_provenance.to_dense(), dense_provenance)
     print(f"Results Consistent: {consistent}")
+
+    print("\n", "-" * 20, "\n")
+    # Method 2: By Hashing
+    print("BY HASHING\n")
+    start = time.time()
+    sparse_provenance = provenance_by_hashing(input_df, output_df, sparse=True)
+    sparse_time = time.time() - start
+    print(f"Sparse Tensor Time: {sparse_time:.6f}s\n")
+    print(f"Provenance Sparse Tensor :\n{sparse_provenance}\n")
+
+    start = time.time()
+    dense_provenance = provenance_by_hashing(input_df, output_df, sparse=False)
+    dense_time = time.time() - start
+    print(f"Dense Tensor Time: {dense_time:.6f}s\n")
+    print(f"Provenance dense Tensor :\n{dense_provenance}\n")
+
+    # Verify consistency
+    consistent = torch.equal(sparse_provenance.to_dense(), dense_provenance)
+    print(f"Results Consistent: {consistent}")
+
+
+def provenance(
+    input_df: pd.DataFrame, output_df: pd.DataFrame, sparse: bool = True
+) -> torch.Tensor | None:
+    """
+    Compute the provenance between two DataFrames using different methods.
+    Tries the index matching method first, and falls back to hashing if there's an error.
+    If both methods fail, raises a custom ProvenanceError.
+
+    Parameters:
+        - input_df (pd.DataFrame): The original DataFrame.
+        - output_df (pd.DataFrame): The filtered or transformed DataFrame.
+        - sparse (bool): Whether to return a sparse tensor. Default is True.
+
+    Returns:
+        - torch.Tensor or None: The provenance tensor (either sparse or dense), or None if both methods fail.
+    """
+    try:
+        return provenance_index_matching(input_df, output_df, sparse)
+    except Exception as e:
+        print(f"Index matching failed: {e}. Falling back to provenance_by_hashing.")
+        try:
+            return provenance_by_hashing(input_df, output_df, sparse)
+        except Exception as e:
+            # If both methods fail, return None
+            print(f"Both methods failed to compute provenance: {e}")
+            return None
