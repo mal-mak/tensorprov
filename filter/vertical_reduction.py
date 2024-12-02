@@ -1,38 +1,34 @@
 import pandas as pd
 import torch
 import time
+import hashlib
 
 
 def transform(input_df: pd.DataFrame, columns: list[str], retain: bool = True):
     """
-    This function allows for either retaining or removing a subset of columns from the
-    original DataFrame.
+    Filters `input_df`, returning a DataFrame with specified columns only.
 
     Parameters:
-    - input_df (pd.DataFrame): The original DataFrame from which columns will be selected.
-    - columns (list[str]): A list of column names to retain or remove.
-    - retain (bool, optional): If True, the columns in the `columns` list are kept.
-                               If False, the columns are removed. Defaults to True.
+        - input_df (pd.DataFrame): The original DataFrame to be filtered.
+        - columns (List[str]): Columns to filter.
+        - retain (bool): If True, 'columns' are kept in the output. Else 'columns' are removed.
+                        Defaults to True.
 
     Returns:
-    - pd.DataFrame: A new DataFrame with only the selected columns. If `retain` is True,
-                    it contains only the specified columns; if False, the specified columns
-                    are dropped.
-
-    Raises:
-    - KeyError: If any of the columns provided in the list do not exist in the DataFrame.
+        - pd.DataFrame: A DataFrame containing only rows that satisfy the specified filter condition.
 
     Example:
-    >>> df = pd.DataFrame({'A': [1, 2], 'B': [3, 4], 'C': [5, 6]})
-    >>> transform(df, ['A', 'C'], retain=True)
-       A  C
-    0  1  5
-    1  2  6
-
-    >>> transform(df, ['B'], retain=False)
-       A  C
-    0  1  5
-    1  2  6
+    >>> data = {"col1": [1, 2, 3, 4, 5], "col2": [8, 6, 9, 7, 10]}
+    >>> input_df = pd.DataFrame(data)
+    >>> columns = ["(col1"]
+    >>> output_df = transform(input_df, columns, True)
+    >>> output_df
+       col1
+    0     1
+    1     2
+    2     3
+    3     4
+    4     5
     """
     if isinstance(input_df, torch.Tensor):
         # Convert input to pandas DataFrame
@@ -53,43 +49,108 @@ def transform(input_df: pd.DataFrame, columns: list[str], retain: bool = True):
         )
 
 
-def provenance(input_df: pd.DataFrame, output_df: pd.DataFrame, sparse: bool = True):
+def provenance_column_matching(
+    input_df: pd.DataFrame, output_df: pd.DataFrame, sparse: bool = True
+):
     """
-    Constructs a provenance tensor indicating which columns were retained from the original
-    DataFrame during vertical reduction.
-
-    The provenance tensor records which columns of the original DataFrame remain in the output
-    DataFrame. If sparse is set to True, a sparse tensor is returned. If False, the tensor is
-    dense.
+    Compute the provenance for vertical reduction by columns matching.
 
     Parameters:
-    - input_df (pd.DataFrame): The original DataFrame from which columns were selected.
-    - output_df (pd.DataFrame): The DataFrame containing the selected columns (after reduction).
-    - sparse (bool, optional): If True, a sparse tensor is returned. If False, the tensor is
-                               converted to a dense tensor that is repeated for each row.
-                               Defaults to True.
+        input_df (pd.DataFrame): The original DataFrame.
+        output_df (pd.DataFrame): The transformed DataFrame with retained columns.
+        sparse (bool, optional): If True, returns a sparse tensor. If False, returns a dense tensor. Defaults to True.
 
     Returns:
-    - torch.Tensor: A sparse or dense tensor, depending on the `sparse` flag.
-        - If `sparse=True`, a sparse COO tensor with shape `(input_df.shape[1],)`, where
-          each non-zero element corresponds to a retained column in `output_df`.
-        - If `sparse=False`, a dense tensor with shape `(input_df.shape[0], input_df.shape[1])`
-          that has the provenance information duplicated across rows.
+        torch.Tensor: A tensor representing the provenance of retained columns from input_df to output_df.
 
     Raises:
-    - ValueError: If the columns in `output_df` are not found in `input_df`.
-    - KeyError: If any of the columns in `output_df` are not found in `input_df`.
-    - RuntimeError: If there is an issue creating the provenance tensor.
+        ValueError: If any columns in output_df are not found in input_df.
+        KeyError: If a column in output_df cannot be found in input_df.
 
     Example:
-    >>> df = pd.DataFrame({'A': [1, 2], 'B': [3, 4], 'C': [5, 6]})
-    >>> output_df = transform(df, ['A', 'C'], retain=True)
-    >>> provenance(df, output_df, sparse=True)
-    tensor(indices=tensor([[0, 2]]), values=tensor([1, 1], dtype=torch.int8), size=(3,))
+        >>> input_df = pd.DataFrame({'A': [1, 2], 'B': [3, 4], 'C': [5, 6]})
+        >>> output_df = input_df[['A', 'C']]
+        >>> provenance_column_matching(input_df, output_df)
+        tensor(indices=tensor([[0, 2]]),
+                values=tensor([1, 1]),
+                size=(3,), nnz=2, dtype=torch.int8, layout=torch.sparse_coo)
+    """
 
-    >>> provenance(df, output_df, sparse=False)
-    tensor([[1, 0, 1],
-            [1, 0, 1]])
+    if isinstance(input_df, torch.Tensor):
+        # Convert input to pandas DataFrame
+        input_df = pd.DataFrame(
+            input_df.numpy(), columns=[f"col{i}" for i in range(input_df.shape[1])]
+        )
+
+    # Check if the output_df contains columns that exist in input_df
+    if not set(output_df.columns).issubset(input_df.columns):
+        raise ValueError(
+            "Error: One or more columns in the output_df are not found in input_df."
+        )
+
+    # Identify retained columns
+    try:
+        retained_columns = [input_df.columns.get_loc(col) for col in output_df.columns]
+    except KeyError as e:
+        raise KeyError(
+            f"Error: One or more column names in output_df are not found in input_df. {e}"
+        )
+
+    if sparse:
+        try:
+            values = torch.ones(len(retained_columns), dtype=torch.int8)
+            # Create a sparse tensor for provenance
+            provenance_tensor = torch.sparse_coo_tensor(
+                indices=[retained_columns], values=values, size=(input_df.shape[1],)
+            )
+        except Exception as e:
+            raise RuntimeError(f"Error: Failed to create sparse tensor. {e}")
+    else:
+        try:
+            # Initialize a dense tensor with zeros
+            provenance_tensor = torch.zeros(input_df.shape[1], dtype=torch.int8)
+            # Set the retained columns to 1
+            for col_idx in retained_columns:
+                provenance_tensor[col_idx] = 1
+        except Exception as e:
+            raise RuntimeError(f"Error: Failed to create dense tensor. {e}")
+
+    return provenance_tensor
+
+
+def hash_column(column) -> str:
+    """
+    Compute a unique SHA256 hash for a given column.
+    """
+    col_str = ",".join(map(str, column))
+    return hashlib.sha256(col_str.encode()).hexdigest()
+
+
+def provenance_by_hashing(
+    input_df: pd.DataFrame, output_df: pd.DataFrame, sparse: bool = True
+):
+    """
+    Compute the provenance of columns by comparing column-wise hashes between input_df and output_df.
+
+    Parameters:
+        input_df (pd.DataFrame): The original DataFrame.
+        output_df (pd.DataFrame): The transformed DataFrame with retained columns.
+        sparse (bool, optional): If True, returns a sparse tensor. If False, returns a dense tensor. Defaults to True.
+
+    Returns:
+        torch.Tensor: A tensor representing the provenance of the retained columns from input_df to output_df.
+
+    Raises:
+        ValueError: If any columns in output_df are not found in input_df.
+        KeyError: If a column in output_df cannot be found in input_df.
+
+    Example:
+        >>> input_df = pd.DataFrame({'A': [1, 2], 'B': [3, 4], 'C': [5, 6]})
+        >>> output_df = input_df[['A', 'C']]
+        >>> provenance_by_hashing(input_df, output_df)
+        tensor(indices=tensor([[0, 2]]),
+                values=tensor([1, 1]),
+                size=(3,), nnz=2, dtype=torch.int8, layout=torch.sparse_coo)
     """
     if isinstance(input_df, torch.Tensor):
         # Convert input to pandas DataFrame
@@ -103,49 +164,44 @@ def provenance(input_df: pd.DataFrame, output_df: pd.DataFrame, sparse: bool = T
             "Error: One or more columns in the output_df are not found in input_df."
         )
 
-    # Identify retained columns by name and map to column indices
-    try:
-        retained_columns = [input_df.columns.get_loc(col) for col in output_df.columns]
-    except KeyError as e:
-        raise KeyError(
-            f"Error: One or more column names in output_df are not found in input_df. {e}"
-        )
+    # Hash columns in the output DataFrame
+    output_hashes = output_df.apply(hash_column, axis=0)
+
+    # Identify the retained columns based on matching hashes
+    retained_columns = [
+        col
+        for col in input_df.columns
+        if hash_column(input_df[col]) in output_hashes.values
+    ]
+
+    indices = [input_df.columns.get_loc(col) for col in retained_columns]
 
     if sparse:
-        try:
-            values = torch.ones(len(retained_columns), dtype=torch.int8)
-            # Create a COO provenance tensor
-            provenance_tensor = torch.sparse_coo_tensor(
-                indices=[retained_columns], values=values, size=(input_df.shape[1],)
-            )
-        except Exception as e:
-            raise RuntimeError(f"Error: Failed to create sparse tensor. {e}")
+        # Create sparse tensor
+        values = torch.ones(len(indices), dtype=torch.int8)
+        return torch.sparse_coo_tensor(
+            indices=[indices], values=values, size=(input_df.shape[1],)
+        )
     else:
-        try:
-            # Initialize a zero tensor of shape (input_df.shape[0], input_df.shape[1])
-            provenance_tensor = torch.zeros(
-                input_df.shape[0], input_df.shape[1], dtype=torch.int8
-            )
-            for col_idx in retained_columns:
-                provenance_tensor[:, col_idx] = 1
-        except Exception as e:
-            raise RuntimeError(f"Error: Failed to create dense tensor. {e}")
-
-    return provenance_tensor
+        # Create dense tensor
+        provenance_tensor = torch.zeros(input_df.shape[1], dtype=torch.int8)
+        for col_idx in indices:
+            provenance_tensor[col_idx] = 1
+        return provenance_tensor
 
 
 # Performance comparison
 def compare(input_df, columns, retain):
     """
-    Compare performance and results of sparse and dense provenance methods.
+    Compare the performance and results of different provenance methods.
 
     Parameters:
-        data (torch.Tensor): Original dataset (2D tensor).
-        method (str): Oversampling method ('horizontal' or 'vertical').
-        factor (int): Multiplication factor for oversampling.
+        input_df (pd.DataFrame): The original DataFrame.
+        columns (list[str]): The columns to retain or remove in the output DataFrame.
+        retain (bool): If True, the specified columns are retained; if False, they are removed.
 
     Returns:
-        None
+        None: This function prints the results of the provenance comparisons and performance timings.
     """
     if isinstance(input_df, torch.Tensor):
         # Convert input to pandas DataFrame
@@ -154,27 +210,65 @@ def compare(input_df, columns, retain):
         )
     output_df = transform(input_df, columns, retain)
 
-    # Method 1: Sparse tensor
+    # Method 1: Index Matching
+    print("INDEX MATCHING\n")
     start = time.time()
-    sparse_provenance = provenance(input_df, output_df, sparse=True)
+    sparse_provenance = provenance_column_matching(input_df, output_df, sparse=True)
     sparse_time = time.time() - start
     print(f"Sparse Tensor Time: {sparse_time:.6f}s\n")
-    print(f"Provenance Sparse Tensor : {sparse_provenance}\n")
+    print(f"Provenance Sparse Tensor :\n{sparse_provenance}\n")
 
-    # Method 2: Dense tensor
     start = time.time()
-    dense_provenance = provenance(input_df, output_df, sparse=False)
+    dense_provenance = provenance_column_matching(input_df, output_df, sparse=False)
     dense_time = time.time() - start
-    print(f"Provenance dense Tensor : {dense_provenance}\n")
     print(f"Dense Tensor Time: {dense_time:.6f}s\n")
+    print(f"Provenance dense Tensor :\n{dense_provenance}\n")
 
     # Verify consistency
-    sparse_dense_diff = (
-        sparse_provenance.to_dense()
-        if sparse_provenance.is_sparse
-        else sparse_provenance
-    ) - dense_provenance[
-        0, :
-    ]  # Because dense_provenance is of the same shape as input_df whereas sparse_provenance just represents the retained columns (input_df.shape[1])
-    consistent = torch.allclose(sparse_dense_diff, torch.zeros_like(sparse_dense_diff))
+    consistent = torch.equal(sparse_provenance.to_dense(), dense_provenance)
     print(f"Results Consistent: {consistent}")
+
+    print("\n", "-" * 20, "\n")
+    # Method 2: By Hashing
+    print("BY HASHING\n")
+    start = time.time()
+    sparse_provenance = provenance_by_hashing(input_df, output_df, sparse=True)
+    sparse_time = time.time() - start
+    print(f"Sparse Tensor Time: {sparse_time:.6f}s\n")
+    print(f"Provenance Sparse Tensor :\n{sparse_provenance}\n")
+
+    start = time.time()
+    dense_provenance = provenance_by_hashing(input_df, output_df, sparse=False)
+    dense_time = time.time() - start
+    print(f"Dense Tensor Time: {dense_time:.6f}s\n")
+    print(f"Provenance dense Tensor :\n{dense_provenance}\n")
+
+    # Verify consistency
+    consistent = torch.equal(sparse_provenance.to_dense(), dense_provenance)
+    print(f"Results Consistent: {consistent}")
+
+
+def provenance(
+    input_df: pd.DataFrame, output_df: pd.DataFrame, sparse: bool = True
+) -> torch.Tensor | None:
+    """
+    Compute the provenance between two DataFrames.
+
+    Parameters:
+        - input_df (pd.DataFrame or torch.Tensor): The original DataFrame.
+        - output_df (pd.DataFrame or torch.Tensor): The filtered or transformed DataFrame.
+        - sparse (bool): Whether to return a sparse tensor. Default is True.
+
+    Returns:
+        - torch.Tensor or None: The provenance tensor (either sparse or dense), or None if both methods fail.
+    """
+    try:
+        return provenance_column_matching(input_df, output_df, sparse)
+    except Exception as e:
+        print(f"Index matching failed: {e}. Falling back to provenance_by_hashing.")
+        try:
+            return provenance_by_hashing(input_df, output_df, sparse)
+        except Exception as e:
+            # If both methods fail, return None
+            print(f"Both methods failed to compute provenance: {e}")
+            return None
