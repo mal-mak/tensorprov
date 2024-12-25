@@ -1,22 +1,11 @@
-"Oversampling tensors"
 # pylint: disable=no-member
 import torch
 import time
-
+import matplotlib.pyplot as plt
+import os
 
 # Function to perform oversampling
 def oversample(data, method="horizontal", factor=2):
-    """
-    Perform horizontal or vertical oversampling.
-
-    Parameters:
-        data (torch.Tensor): Input dataset (2D tensor).
-        method (str): Oversampling direction ('horizontal' or 'vertical').
-        factor (int): Multiplication factor for oversampling.
-
-    Returns:
-        torch.Tensor: Oversampled dataset.
-    """
     if method == "horizontal":
         return data.repeat(1, factor)
     elif method == "vertical":
@@ -24,20 +13,8 @@ def oversample(data, method="horizontal", factor=2):
     else:
         raise ValueError("Invalid method. Choose 'horizontal' or 'vertical'.")
 
-
 # Provenance determination: Method 1 (Sparse tensor)
 def determine_provenance_sparse(original_data, augmented_data, method="horizontal"):
-    """
-    Determine provenance using a sparse tensor approach.
-
-    Parameters:
-        original_data (torch.Tensor): Original dataset.
-        augmented_data (torch.Tensor): Oversampled dataset.
-        method (str): Oversampling method ('horizontal' or 'vertical').
-
-    Returns:
-        torch.sparse.Tensor: Sparse binary tensor capturing provenance.
-    """
     original_rows, original_cols = original_data.size()
     augmented_rows, augmented_cols = augmented_data.size()
 
@@ -55,20 +32,8 @@ def determine_provenance_sparse(original_data, augmented_data, method="horizonta
     values = torch.ones(indices.size(1), dtype=torch.float32)
     return torch.sparse_coo_tensor(indices, values, size=size)
 
-
 # Provenance determination: Method 2 (Dense tensor)
 def determine_provenance_dense(original_data, augmented_data, method="horizontal"):
-    """
-    Determine provenance using a dense approach.
-
-    Parameters:
-        original_data (torch.Tensor): Original dataset.
-        augmented_data (torch.Tensor): Oversampled dataset.
-        method (str): Oversampling method ('horizontal' or 'vertical').
-
-    Returns:
-        torch.Tensor: Dense binary tensor capturing provenance.
-    """
     original_rows, original_cols = original_data.size()
     augmented_rows, augmented_cols = augmented_data.size()
 
@@ -91,44 +56,46 @@ def determine_provenance_dense(original_data, augmented_data, method="horizontal
 
     return provenance_tensor
 
-
 # Performance comparison
-def compare_methods(data, method="horizontal", factor=2):
-    """
-    Compare performance and results of sparse and dense provenance methods.
+def compare_methods(data, method="horizontal", factors=[2, 4, 8]):
+    sparse_times = []
+    dense_times = []
 
-    Parameters:
-        data (torch.Tensor): Original dataset (2D tensor).
-        method (str): Oversampling method ('horizontal' or 'vertical').
-        factor (int): Multiplication factor for oversampling.
+    for factor in factors:
+        # Perform oversampling
+        augmented_data = oversample(data, method, factor)
 
-    Returns:
-        None
-    """
-    print(f"\nEvaluating {method} oversampling with factor {factor}:")
+        # Method 1: Sparse tensor
+        start = time.time()
+        determine_provenance_sparse(data, augmented_data, method)
+        sparse_times.append(time.time() - start)
 
-    # Perform oversampling
-    augmented_data = oversample(data, method, factor)
+        # Method 2: Dense tensor
+        start = time.time()
+        determine_provenance_dense(data, augmented_data, method)
+        dense_times.append(time.time() - start)
 
-    # Method 1: Sparse tensor
-    start = time.time()
-    sparse_provenance = determine_provenance_sparse(data, augmented_data, method)
-    sparse_time = time.time() - start
-    print(f"Sparse Tensor Time: {sparse_time:.6f}s")
-    print(f"Provenance Sparse Tensor : {sparse_provenance}")
+    # Plot results
+    plt.figure(figsize=(10, 6))
+    plt.plot(factors, sparse_times, marker='o', label='Sparse Tensor')
+    plt.plot(factors, dense_times, marker='x', label='Dense Tensor')
+    plt.xlabel('Oversampling Factor')
+    plt.ylabel('Execution Time (seconds)')
+    plt.title(f'Execution Time Comparison ({method.capitalize()} Oversampling)')
+    plt.legend()
+    plt.grid(True)
 
-    # Method 2: Dense tensor
-    start = time.time()
-    dense_provenance = determine_provenance_dense(data, augmented_data, method)
-    dense_time = time.time() - start
-    print(f"Provenance dense Tensor : {dense_provenance}")
-    print(f"Dense Tensor Time: {dense_time:.6f}s")
+    # Save the plot with a dynamic filename based on the oversampling method
+    save_path = f'{method}_oversampling_comparison.png'
+    plt.savefig(save_path)
+    print(f"Plot saved as {save_path}")
 
-    # Verify consistency
-    sparse_dense_diff = (
-        sparse_provenance.to_dense()
-        if sparse_provenance.is_sparse
-        else sparse_provenance
-    ) - dense_provenance
-    consistent = torch.allclose(sparse_dense_diff, torch.zeros_like(sparse_dense_diff))
-    print(f"Results Consistent: {consistent}")
+if __name__ == "__main__":
+    # Generate sample data
+    data = torch.rand(100, 100)
+
+    # Compare methods for horizontal oversampling
+    compare_methods(data, method="horizontal", factors=[2, 4, 8, 16])
+
+    # Compare methods for vertical oversampling
+    compare_methods(data, method="vertical", factors=[2, 4, 8, 16])

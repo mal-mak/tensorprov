@@ -1,7 +1,10 @@
 import pandas as pd
+import numpy as np
 import torch
 import time
 import hashlib
+import matplotlib.pyplot as plt
+
 
 
 def transform(input_df: pd.DataFrame, filter: str) -> pd.DataFrame:
@@ -295,3 +298,66 @@ def provenance(
             # If both methods fail, return None
             print(f"Both methods failed to compute provenance: {e}")
             return None
+
+def main():
+    # Generate sample data
+    sizes = [100, 1000, 2000, 3000]
+    methods = ['Index Matching', 'Hashing']
+    sparse_times = {method: [] for method in methods}
+    dense_times = {method: [] for method in methods}
+
+    for size in sizes:
+        input_df = pd.DataFrame({
+            'A': np.random.randint(0, 100, size),
+            'B': np.random.randint(0, 100, size),
+            'C': np.random.randint(0, 100, size)
+        })
+        filter_condition = 'A > 50'
+        output_df = transform(input_df, filter_condition)
+
+        print(f"\nTesting with {size} rows:")
+
+        # Test Index Matching
+        start = time.time()
+        provenance_index_matching(input_df, output_df, sparse=True)
+        sparse_times['Index Matching'].append(time.time() - start)
+
+        start = time.time()
+        provenance_index_matching(input_df, output_df, sparse=False)
+        dense_times['Index Matching'].append(time.time() - start)
+
+        # Test Hashing
+        start = time.time()
+        provenance_by_hashing(input_df, output_df, sparse=True)
+        sparse_times['Hashing'].append(time.time() - start)
+
+        start = time.time()
+        provenance_by_hashing(input_df, output_df, sparse=False)
+        dense_times['Hashing'].append(time.time() - start)
+
+    # Plotting
+    plt.figure(figsize=(12, 6))
+    markers = ['o', 's', '^', 'D']
+    for i, method in enumerate(methods):
+        plt.plot(sizes, sparse_times[method], label=f'{method} (Sparse)', marker=markers[i*2])
+        plt.plot(sizes, dense_times[method], label=f'{method} (Dense)', marker=markers[i*2+1], linestyle='--')
+
+    plt.xscale('log')
+    plt.yscale('log')
+    plt.xlabel('Number of Rows')
+    plt.ylabel('Execution Time (seconds)')
+    plt.title('Performance Comparison of Horizontal Reduction methods')
+    plt.legend()
+    plt.grid(True)
+    plt.savefig('provenance_performance.png')
+    plt.show()
+
+    # Print final results
+    print("\nFinal Results:")
+    for method in methods:
+        print(f"\n{method}:")
+        print(f"  Sparse: {sparse_times[method]}")
+        print(f"  Dense: {dense_times[method]}")
+
+if __name__ == "__main__":
+    main()

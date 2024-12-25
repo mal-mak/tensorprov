@@ -1,7 +1,9 @@
 import pandas as pd
+import numpy as np
 import torch
 import time
 import hashlib
+import matplotlib.pyplot as plt
 
 
 def transform(input_df: pd.DataFrame, columns: list[str], retain: bool = True):
@@ -272,3 +274,61 @@ def provenance(
             # If both methods fail, return None
             print(f"Both methods failed to compute provenance: {e}")
             return None
+
+def main():
+    # Generate test data
+    sizes = [100, 1000, 2000, 3000]
+    methods = ['Index Matching', 'Hashing']
+    sparse_times = {method: [] for method in methods}
+    dense_times = {method: [] for method in methods}
+
+    for size in sizes:
+        input_df = pd.DataFrame(np.random.rand(size, 10), columns=[f'col{i}' for i in range(10)])
+        columns = ['col0', 'col2', 'col4']
+        output_df = transform(input_df, columns, retain=True)
+
+        # Index Matching
+        start = time.time()
+        provenance_column_matching(input_df, output_df, sparse=True)
+        sparse_times['Index Matching'].append(time.time() - start)
+
+        start = time.time()
+        provenance_column_matching(input_df, output_df, sparse=False)
+        dense_times['Index Matching'].append(time.time() - start)
+
+        # Hashing
+        start = time.time()
+        provenance_by_hashing(input_df, output_df, sparse=True)
+        sparse_times['Hashing'].append(time.time() - start)
+
+        start = time.time()
+        provenance_by_hashing(input_df, output_df, sparse=False)
+        dense_times['Hashing'].append(time.time() - start)
+
+    # Plotting
+    plt.figure(figsize=(12, 6))
+    for method in methods:
+        plt.plot(sizes, sparse_times[method], marker='o', label=f'{method} (Sparse)')
+        plt.plot(sizes, dense_times[method], marker='s', linestyle='--', label=f'{method} (Dense)')
+
+    plt.xscale('log')
+    plt.yscale('log')
+    plt.xlabel('Number of Rows')
+    plt.ylabel('Execution Time (seconds)')
+    plt.title('Performance Comparison of Provenance Methods')
+    plt.legend()
+    plt.grid(True)
+    plt.savefig('provenance_performance.png')
+    plt.show()
+
+    # Example usage of compare function
+    print("\nExample usage of compare function:")
+    small_df = pd.DataFrame({
+        'A': [1, 2, 3],
+        'B': [4, 5, 6],
+        'C': [7, 8, 9]
+    })
+    compare(small_df, ['A', 'C'], retain=True)
+
+if __name__ == "__main__":
+    main()
