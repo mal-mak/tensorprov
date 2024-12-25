@@ -1,5 +1,4 @@
-
-import pandas as pd 
+import pandas as pd
 import torch
 
 
@@ -40,6 +39,7 @@ def sparse_tensor_prov(data_tensor_1, data_tensor_2):
     # Return the results
     return combined_df, provenance
 
+
 def add_source_identifiers(data_tensor_1, data_tensor_2):
     """
     Add source identifiers to input DataFrames.
@@ -56,6 +56,7 @@ def add_source_identifiers(data_tensor_1, data_tensor_2):
     data_tensor_1["source_id"] = "D¹"
     data_tensor_2["source_id"] = "D²"
     return data_tensor_1, data_tensor_2
+
 
 def append_with_provenance(data_tensor_1, data_tensor_2):
     """

@@ -151,8 +151,8 @@ def provenance_by_hashing(
                         Defaults to True.
 
     Returns:
-        torch.Tensor: A tensor (sparse or dense) representing the provenance. The tensor has 
-                      shape (n_input_rows, n_output_rows), where each entry (i, j) is 1 if 
+        torch.Tensor: A tensor (sparse or dense) representing the provenance. The tensor has
+                      shape (n_input_rows, n_output_rows), where each entry (i, j) is 1 if
                       the i-th row of `input_df` matches the j-th row of `output_df`, otherwise 0.
 
     Example:
