@@ -36,6 +36,18 @@ def add_source_identifiers(data_tensor_1, data_tensor_2):
     data_tensor_2["source_id"] = "D²"
     return data_tensor_1, data_tensor_2
 
+def append_with_provenance(data_tensor_1, data_tensor_2):
+    """
+    Append two datasets with provenance (source identifiers).
+    Parameters:
+        data_tensor_1 (pd.DataFrame): First dataset with source identifiers.
+        data_tensor_2 (pd.DataFrame): Second dataset with source identifiers.
+    Returns:
+        pd.DataFrame: Combined DataFrame with provenance.
+    """
+    combined_df = pd.concat([data_tensor_1, data_tensor_2], ignore_index=True)
+    return combined_df
+
 
 def compare_execution_times(data_tensor_1, data_tensor_2):
     # Track the execution times for sparse and dense methods
